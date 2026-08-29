@@ -6,8 +6,10 @@ import subprocess
 import hashlib
 from pathlib import Path
 
-# Paths
+# Paths & Module Import Setup
 ROOT_DIR = Path(__file__).parent.parent
+sys.path.insert(0, str(ROOT_DIR))
+
 DB_PATH = ROOT_DIR / "database" / "neural_binary.db"
 Z_CORE_BIN = ROOT_DIR / "pillar_3_symbolic" / "build" / "z_core"
 MODERNIZED_DIR = ROOT_DIR / "modernized"
