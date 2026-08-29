@@ -27,26 +27,11 @@ init_db()
 # Tool Implementation Functions
 # ============================================================================
 
-def analyze_function_static(address: str, function_name: str = "func_target") -> dict:
+def analyze_function_static(address: str = "0x401000", function_name: str = "func_target", binary_path: str = None) -> dict:
     """Extracts NS-EX (Normalized Semantic Expressions) for a function at a specific address."""
-    nsex_expr = f"(PCODE_FUNCTION {address} (XOR RAX (VAL 0xDEADBEEF)) (CMP_EQ RAX (VAL 0xCAFEBABE)))"
-    logic_hash = hashlib.sha256(nsex_expr.encode()).hexdigest()
-
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("""
-        INSERT OR REPLACE INTO binary_mappings (logic_hash, function_name, start_address, semantic_intent)
-        VALUES (?, ?, ?, ?)
-    """, (logic_hash, function_name, address, "Conditional key verification routine"))
-    conn.commit()
-    conn.close()
-
-    return {
-        "status": "success",
-        "address": address,
-        "logic_hash": logic_hash,
-        "nsex_expression": nsex_expr
-    }
+    from pillar_1_static.ghidra_headless_runner import GhidraHeadlessRunner
+    runner = GhidraHeadlessRunner(db_path=DB_PATH)
+    return runner.analyze_binary(binary_path=binary_path, address=address, function_name=function_name)
 
 def solve_constraints(start_address: str, target_address: str) -> dict:
     """Triggers native C++ Z-Engine (angr-lite) to solve branch input constraints."""

@@ -34,7 +34,15 @@ class TestNeuralBinaryPipeline(unittest.TestCase):
         self.assertEqual(res["cycle_count"], 4)
         self.assertIsNotNone(res["trace_id"])
 
-    def test_03_mcp_server_tools(self):
+    def test_03_static_intelligence_lifter(self):
+        """Test Pillar I Static Intelligence NS-EX lifter & Ghidra headless runner."""
+        from pillar_1_static.nsex_lifter import NSEXLifter
+        lifter = NSEXLifter()
+        res = lifter.lift_function("0x401000", "verify_key")
+        self.assertEqual(res["status"], "success")
+        self.assertIsNotNone(res["logic_hash"])
+
+    def test_04_mcp_server_tools(self):
         """Test MCP server tool functions without third-party cloud API dependencies."""
         from mcp_server.server import analyze_function_static, get_execution_trace, solve_constraints, commit_modernized_code
         
@@ -72,7 +80,7 @@ bool verify_key(uint64_t key) {
             content = f.read()
         self.assertIn("bool verify_key(uint64_t key)", content)
 
-    def test_04_synthesis_context(self):
+    def test_05_synthesis_context(self):
         """Test synthesis context packaging for AI Agent MCP queries."""
         from pillar_4_synthesis.synthesis_engine import assemble_synthesis_context
         from mcp_server.server import analyze_function_static
