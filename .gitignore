@@ -1,0 +1,22 @@
+# C++ Build Artifacts
+pillar_3_symbolic/build/
+*.o
+*.a
+*.dylib
+*.so
+z_core
+
+# Database files
+database/*.db
+database/*.db-journal
+
+# Python Cache & Virtual Environments
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# IDE & System Files
+.DS_Store
+.vscode/
+.idea/
