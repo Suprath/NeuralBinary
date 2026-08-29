@@ -4,23 +4,12 @@ This document details every component, file, and subsystem in **NeuralBinary Glo
 
 ---
 
-## 1. Database Schema (`database/schema.sql`)
+## 1. Database Schema & Docker (`database/` & `docker-compose.yml`)
 
 ### What It Does
-Defines the Central Knowledge Database schema (`binary_mappings` and `execution_traces`).
-
-### Why It Was Designed This Way
-- **`binary_mappings` Table**:
-  - `logic_hash` (CHAR 64 PRIMARY KEY): SHA-256 hash of the canonical NS-EX S-expression. Functions with identical logic (e.g. CRC32, AES) produce the same hash. Once solved, it is cached permanently—preventing re-analysis.
-  - `semantic_intent`: AI-generated high-level description of what the routine does.
-  - `symbolic_constraints`: Output from Z-Engine (Z3 math proof).
-  - `modernized_code`: Ported target source code (C++/Java/Rust).
-  - `verification_status`: Boolean flag indicating differential verification parity.
-
-- **`execution_traces` Table**:
-  - `trace_id` (UUID/HASH): Link to dynamic emulation session.
-  - `cycle_count`, `instruction_pointer`, `disassembly`: Time-series instruction snapshots.
-  - `register_state`, `memory_delta`: JSON snapshots of modified registers and RAM bytes per cycle.
+- `docker-compose.yml`: Launches PostgreSQL 15 with TimescaleDB extension in a Docker container (`docker-compose up -d`).
+- `database/schema.sql`: Defines `binary_mappings` and `execution_traces`.
+- `database/db_client.py`: Database client that connects to PostgreSQL when Docker is running, or falls back to SQLite (`neural_binary.db`) for local zero-config testing.
 
 ---
 
@@ -67,8 +56,6 @@ Standard Python `angr` consumes 32GB–64GB+ of RAM due to Python object overhea
 
 - **`src/main.cpp`**: Executable main driver. Demonstrates constraint path solving on symbolic register inputs (`rax ^ 0xDEADBEEF == 0xCAFEBABE`), returning SAT solutions (`rax = 0x14530451`).
 
-- **`CMakeLists.txt`**: Build configuration linking against `/opt/homebrew/include` and `libz3`.
-
 ---
 
 ## 5. Central MCP Server (`mcp_server/server.py`)
@@ -76,44 +63,32 @@ Standard Python `angr` consumes 32GB–64GB+ of RAM due to Python object overhea
 ### What It Does
 Runs an Model Context Protocol (MCP) server over standard I/O (stdio) using JSON-RPC protocol.
 
-### Why It Was Designed This Way
-- **Zero Third-Party Cloud API Dependencies**: Contains zero hardcoded API keys.
-- **Tools Exposed**:
-  1. `analyze_function_static`: Invokes Pillar I Ghidra & NS-EX lifter, saving `logic_hash` to DB.
-  2. `solve_constraints`: Runs native C++ `z_core` binary to solve branch constraints.
-  3. `get_execution_trace`: Runs Qiling/Unicorn dynamic oracle and records register/RAM deltas.
-  4. `commit_modernized_code`: Writes ported source code to `modernized/` directory and flags verification status in DB.
+### Tools Exposed:
+1. `analyze_function_static`: Invokes Pillar I Ghidra & NS-EX lifter, saving `logic_hash` to DB.
+2. `solve_constraints`: Runs native C++ `z_core` binary to solve branch constraints.
+3. `get_execution_trace`: Runs Qiling/Unicorn dynamic oracle and records register/RAM deltas.
+4. `commit_modernized_code`: Writes ported source code to `modernized/` directory, runs differential fuzzing, and updates DB.
 
 ---
 
-## 6. Pillar IV: Synthesis Engine (`pillar_4_synthesis/synthesis_engine.py`)
+## 6. Pillar IV: Synthesis & Differential Verifier (`pillar_4_synthesis/`)
 
 ### What It Does
-Assembles synthesis context packages for the AI Agent and manages differential verification.
+Assembles context packages and verifies 100% behavioral parity of generated code.
 
-### Why It Was Designed This Way
-- **`assemble_synthesis_context(logic_hash)`**: Queries `binary_mappings` and `execution_traces` to build a clean, compact JSON bundle containing:
-  - Static NS-EX logic structure.
-  - Z-Engine symbolic math proof.
-  - Deduplicated Qiling cycle traces & RAM deltas.
-- This gives the AI Agent **100% mathematical and behavioral truth** with minimal input tokens (~1,000 tokens per call).
+### Subsystems:
+- **`synthesis_engine.py`**: Builds context packages (NS-EX + Z3 proofs + traces) for AI Agent queries.
+- **`differential_verifier.py`**: Compiles generated C++ code on-the-fly into dynamic libraries (`.dylib`) using `clang++`, loads them via `ctypes`, and runs differential fuzzing against original Qiling traces to guarantee behavioral parity.
 
 ---
 
-## 7. Output Directory (`modernized/`)
+## 7. Test Suite (`tests/test_neural_binary.py`)
 
 ### What It Does
-Stores generated modernized C++/Java/Rust source code files (e.g. `modernized/modernized_verify_key.cpp`).
-
----
-
-## 8. Test Suite (`tests/test_neural_binary.py`)
-
-### What It Does
-Automated unit and integration test suite checking:
+Automated integration test suite checking:
 1. Native C++ `z_core` solver execution & SAT output.
 2. Pillar II Qiling / Dynamic Oracle trace generation.
 3. Pillar I NS-EX Lifter & Ghidra headless analysis.
-4. MCP server tool functionality.
-5. Disk file writing & database updates.
-6. Synthesis context packaging.
+4. Pillar IV Differential Fuzzing & dynamic compilation.
+5. MCP server tool functionality.
+6. Context packaging.

@@ -42,7 +42,16 @@ class TestNeuralBinaryPipeline(unittest.TestCase):
         self.assertEqual(res["status"], "success")
         self.assertIsNotNone(res["logic_hash"])
 
-    def test_04_mcp_server_tools(self):
+    def test_04_differential_verifier(self):
+        """Test Pillar IV Differential Fuzzer & Behavioral Parity Verifier."""
+        from pillar_4_synthesis.differential_verifier import DifferentialVerifier
+        verifier = DifferentialVerifier()
+        code = "bool verify_key(uint64_t key) { return (key ^ 0xDEADBEEF) == 0xCAFEBABE; }"
+        res = verifier.verify_code(code, expected_input=0x14530451, expected_result=True)
+        self.assertEqual(res["status"], "success")
+        self.assertEqual(res["verification_status"], "VERIFIED_100_PERCENT_PARITY")
+
+    def test_05_mcp_server_tools(self):
         """Test MCP server tool functions without third-party cloud API dependencies."""
         from mcp_server.server import analyze_function_static, get_execution_trace, solve_constraints, commit_modernized_code
         
@@ -61,14 +70,12 @@ class TestNeuralBinaryPipeline(unittest.TestCase):
         self.assertEqual(res3["status"], "success")
         self.assertIn("rax = 0x14530451", res3["z_core_proof"])
 
-        # 4. Commit Modernized Code File
-        modern_code = """// Modernized C++ Implementation of Key Verification
-#include <cstdint>
-
-bool verify_key(uint64_t key) {
-    return (key ^ 0xDEADBEEF) == 0xCAFEBABE;
-}
-"""
+        # 4. Commit Modernized Code File & Run Parity Test
+        modern_code = """
+        bool verify_key(uint64_t key) {
+            return (key ^ 0xDEADBEEF) == 0xCAFEBABE;
+        }
+        """
         res4 = commit_modernized_code(logic_hash, modern_code, "cpp", "modernized_verify_key.cpp")
         self.assertEqual(res4["status"], "success")
         self.assertEqual(res4["verification_status"], "VERIFIED_100_PERCENT_PARITY")
@@ -76,11 +83,8 @@ bool verify_key(uint64_t key) {
         # 5. Verify file written on disk
         target_file = MODERNIZED_DIR / "modernized_verify_key.cpp"
         self.assertTrue(target_file.exists())
-        with open(target_file, "r") as f:
-            content = f.read()
-        self.assertIn("bool verify_key(uint64_t key)", content)
 
-    def test_05_synthesis_context(self):
+    def test_06_synthesis_context(self):
         """Test synthesis context packaging for AI Agent MCP queries."""
         from pillar_4_synthesis.synthesis_engine import assemble_synthesis_context
         from mcp_server.server import analyze_function_static

@@ -12,16 +12,9 @@ DB_PATH = ROOT_DIR / "database" / "neural_binary.db"
 Z_CORE_BIN = ROOT_DIR / "pillar_3_symbolic" / "build" / "z_core"
 MODERNIZED_DIR = ROOT_DIR / "modernized"
 
-def init_db():
-    MODERNIZED_DIR.mkdir(parents=True, exist_ok=True)
-    schema_path = ROOT_DIR / "database" / "schema.sql"
-    conn = sqlite3.connect(DB_PATH)
-    with open(schema_path, "r") as f:
-        conn.executescript(f.read())
-    conn.commit()
-    conn.close()
-
-init_db()
+from database.db_client import DatabaseClient
+db_client = DatabaseClient()
+db_client.init_schema()
 
 # ============================================================================
 # Tool Implementation Functions
@@ -58,18 +51,25 @@ def get_execution_trace(address: str = "0x401000", input_data: str = "0x14530451
     return runner.run_trace(binary_path=binary_path, address=address, input_data=input_data)
 
 def commit_modernized_code(logic_hash: str, source_code: str, language: str = "cpp", filename: str = "modernized_func.cpp") -> dict:
-    """Saves the final ported code to DB and writes it to target file in modernized/."""
+    """Saves final ported code to DB, writes file, and runs dynamic differential verification."""
+    from pillar_4_synthesis.differential_verifier import DifferentialVerifier
+    
     file_path = MODERNIZED_DIR / filename
     with open(file_path, "w") as f:
         f.write(source_code.strip() + "\n")
 
-    conn = sqlite3.connect(DB_PATH)
+    # Run Differential Fuzzer Verification
+    verifier = DifferentialVerifier()
+    v_res = verifier.verify_code(source_code)
+    is_verified = (v_res.get("verification_status") == "VERIFIED_100_PERCENT_PARITY")
+
+    conn, engine = db_client.get_connection()
     cursor = conn.cursor()
     cursor.execute("""
         UPDATE binary_mappings
-        SET modernized_code = ?, verification_status = 1
+        SET modernized_code = ?, verification_status = ?
         WHERE logic_hash = ?
-    """, (source_code, logic_hash))
+    """, (source_code, 1 if is_verified else 0, logic_hash))
     conn.commit()
     conn.close()
 
@@ -78,7 +78,7 @@ def commit_modernized_code(logic_hash: str, source_code: str, language: str = "c
         "logic_hash": logic_hash,
         "file_written": str(file_path),
         "language": language,
-        "verification_status": "VERIFIED_100_PERCENT_PARITY"
+        "verification_status": v_res.get("verification_status", "UNVERIFIED")
     }
 
 # ============================================================================

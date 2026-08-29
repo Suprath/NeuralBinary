@@ -28,7 +28,7 @@
                                 │      │      │
                           ┌─────▼──────▼──────▼──────┐
                           │    Central Knowledge DB  │
-                          │   (database/schema.sql)  │
+                          │ PostgreSQL / TimescaleDB │
                           └──────────────────────────┘
 ```
 
@@ -54,7 +54,18 @@
 4. **Pillar IV: Synthesis & Verification Bridge (MCP + AI)**
    - Exposes tools via MCP over stdio.
    - Combines Static NS-EX + Dynamic Traces + Z-Core Proofs into structured JSON context.
-   - Synthesizes modern C++/Java source code and verifies behavioral parity.
+   - Synthesizes modern C++/Java source code and runs **Differential Fuzzing (`differential_verifier.py`)** to verify 100% behavioral parity.
+
+---
+
+## Database & Docker Setup
+
+NeuralBinary supports containerized PostgreSQL with TimescaleDB via Docker Compose, as well as a local zero-config SQLite fallback:
+
+```bash
+# Start Enterprise PostgreSQL + TimescaleDB Database Container
+docker-compose up -d
+```
 
 ---
 
@@ -62,6 +73,7 @@
 
 ### 1. Prerequisites
 - macOS / Linux
+- `docker` & `docker-compose` (optional, for PostgreSQL)
 - `cmake` (>= 3.15)
 - `clang++` or `g++` (C++17 support)
 - `z3` C++ library (`brew install z3` on macOS)
@@ -90,11 +102,12 @@ python3 mcp_server/server.py --serve
 
 ## Project Layout
 
-- `database/`: SQL schemas (`schema.sql`) and database clients.
+- `database/`: SQL schemas (`schema.sql`) and database client (`db_client.py`).
+- `docker-compose.yml`: Docker configuration for PostgreSQL + TimescaleDB.
 - `mcp_server/`: FastMCP / JSON-RPC tool server (`server.py`).
-- `pillar_1_static/`: Ghidra headless scripts and NS-EX lifter routines.
-- `pillar_2_dynamic/`: Qiling / Mock OS runner and cycle trace recorder.
+- `pillar_1_static/`: Ghidra headless scripts and NS-EX lifter routines (`nsex_lifter.py`).
+- `pillar_2_dynamic/`: Qiling / Mock OS runner (`mock_os_runner.py`).
 - `pillar_3_symbolic/`: Native C++ Z-Engine (`z_core.hpp`, `main.cpp`, `CMakeLists.txt`).
-- `pillar_4_synthesis/`: Context packager (`synthesis_engine.py`) and differential verifier.
+- `pillar_4_synthesis/`: Context packager (`synthesis_engine.py`) and differential verifier (`differential_verifier.py`).
 - `modernized/`: Output directory for generated C++/Java modernized source files.
-- `tests/`: Automated unit and integration test suite.
+- `tests/`: Automated unit and integration test suite (`test_neural_binary.py`).
