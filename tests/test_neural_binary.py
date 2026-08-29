@@ -13,7 +13,6 @@ class TestNeuralBinaryPipeline(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        # Ensure Z-Core binary is compiled
         if not Z_CORE_BIN.exists():
             subprocess.run(["cmake", "-B", "build"], cwd=ROOT_DIR / "pillar_3_symbolic", check=True)
             subprocess.run(["make"], cwd=ROOT_DIR / "pillar_3_symbolic" / "build", check=True)
@@ -26,7 +25,16 @@ class TestNeuralBinaryPipeline(unittest.TestCase):
         self.assertIn("Path 1 Feasibility: SAT", output)
         self.assertIn("rax = 0x14530451", output)
 
-    def test_02_mcp_server_tools(self):
+    def test_02_dynamic_oracle_runner(self):
+        """Test Pillar II Dynamic Oracle Qiling / Mock OS runner."""
+        from pillar_2_dynamic.mock_os_runner import MockOSRunner
+        runner = MockOSRunner(db_path=DB_PATH)
+        res = runner.run_trace(address="0x401000", input_data="0x14530451")
+        self.assertEqual(res["status"], "success")
+        self.assertEqual(res["cycle_count"], 4)
+        self.assertIsNotNone(res["trace_id"])
+
+    def test_03_mcp_server_tools(self):
         """Test MCP server tool functions without third-party cloud API dependencies."""
         from mcp_server.server import analyze_function_static, get_execution_trace, solve_constraints, commit_modernized_code
         
@@ -64,7 +72,7 @@ bool verify_key(uint64_t key) {
             content = f.read()
         self.assertIn("bool verify_key(uint64_t key)", content)
 
-    def test_03_synthesis_context(self):
+    def test_04_synthesis_context(self):
         """Test synthesis context packaging for AI Agent MCP queries."""
         from pillar_4_synthesis.synthesis_engine import assemble_synthesis_context
         from mcp_server.server import analyze_function_static

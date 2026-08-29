@@ -24,7 +24,19 @@ Defines the Central Knowledge Database schema (`binary_mappings` and `execution_
 
 ---
 
-## 2. Pillar III: Symbolic Z-Engine (`pillar_3_symbolic/`)
+## 2. Pillar II: Dynamic Oracle (`pillar_2_dynamic/mock_os_runner.py`)
+
+### What It Does
+Executes binary libraries inside a virtual sandboxed OS environment using **Qiling Framework** and **Unicorn Engine**.
+
+### Why It Was Designed This Way
+- Intercepts CPU execution at every instruction cycle (`ql.hook_code`).
+- Extracts register states (`RAX`, `RBX`, `RSP` / ARM64 `X0`–`X30`), disassemblies, and RAM write deltas.
+- Streams cycle logs into `execution_traces` to provide **behavioral ground truth** for dynamic pointers, structure offsets, and system call boundaries.
+
+---
+
+## 3. Pillar III: Symbolic Z-Engine (`pillar_3_symbolic/`)
 
 ### What It Does
 A native C++ port of core `angr` modules (`SimState`, `Claripy`, `SimEngine`, `CLELoader`) integrated directly with the Z3 C++ API (`z3++`).
@@ -44,7 +56,7 @@ Standard Python `angr` consumes 32GB–64GB+ of RAM due to Python object overhea
 
 ---
 
-## 3. Central MCP Server (`mcp_server/server.py`)
+## 4. Central MCP Server (`mcp_server/server.py`)
 
 ### What It Does
 Runs an Model Context Protocol (MCP) server over standard I/O (stdio) using JSON-RPC protocol.
@@ -54,12 +66,12 @@ Runs an Model Context Protocol (MCP) server over standard I/O (stdio) using JSON
 - **Tools Exposed**:
   1. `analyze_function_static`: Lifts P-Code to NS-EX and saves `logic_hash` to DB.
   2. `solve_constraints`: Runs native C++ `z_core` binary to solve branch constraints.
-  3. `get_execution_trace`: Emulates dynamic cycle states and records register/RAM deltas.
+  3. `get_execution_trace`: Runs Qiling/Unicorn dynamic oracle and records register/RAM deltas.
   4. `commit_modernized_code`: Writes ported source code to `modernized/` directory and flags verification status in DB.
 
 ---
 
-## 4. Pillar IV: Synthesis Engine (`pillar_4_synthesis/synthesis_engine.py`)
+## 5. Pillar IV: Synthesis Engine (`pillar_4_synthesis/synthesis_engine.py`)
 
 ### What It Does
 Assembles synthesis context packages for the AI Agent and manages differential verification.
@@ -73,18 +85,19 @@ Assembles synthesis context packages for the AI Agent and manages differential v
 
 ---
 
-## 5. Output Directory (`modernized/`)
+## 6. Output Directory (`modernized/`)
 
 ### What It Does
 Stores generated modernized C++/Java/Rust source code files (e.g. `modernized/modernized_verify_key.cpp`).
 
 ---
 
-## 6. Test Suite (`tests/test_neural_binary.py`)
+## 7. Test Suite (`tests/test_neural_binary.py`)
 
 ### What It Does
 Automated unit and integration test suite checking:
 1. Native C++ `z_core` solver execution & SAT output.
-2. MCP server tool functionality.
-3. Disk file writing & database updates.
-4. Synthesis context packaging.
+2. Pillar II Qiling / Dynamic Oracle trace generation.
+3. MCP server tool functionality.
+4. Disk file writing & database updates.
+5. Synthesis context packaging.

@@ -66,33 +66,11 @@ def solve_constraints(start_address: str, target_address: str) -> dict:
         "z_core_proof": solver_output.strip()
     }
 
-def get_execution_trace(address: str, input_data: str = "0x14530451") -> dict:
-    """Runs Mock OS (Qiling emulation) on a function and returns instruction state transition log."""
-    trace_id = hashlib.md5(f"{address}:{input_data}".encode()).hexdigest()
-    
-    cycles = [
-        {"cycle": 1, "ip": 0x401000, "disasm": "mov rax, [rsp+8]", "registers": {"rax": input_data}, "ram_delta": {}},
-        {"cycle": 2, "ip": 0x401004, "disasm": "xor rax, 0xdeadbeef", "registers": {"rax": "0xcafebabe"}, "ram_delta": {}},
-        {"cycle": 3, "ip": 0x401008, "disasm": "cmp rax, 0xcafebabe", "registers": {"flags": "ZF=1"}, "ram_delta": {}},
-        {"cycle": 4, "ip": 0x40100c, "disasm": "je 0x401500", "registers": {"rip": "0x401500"}, "ram_delta": {}}
-    ]
-
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    for step in cycles:
-        cursor.execute("""
-            INSERT OR REPLACE INTO execution_traces (trace_id, cycle_count, instruction_pointer, disassembly, register_state, memory_delta)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (trace_id, step["cycle"], step["ip"], step["disasm"], json.dumps(step["registers"]), json.dumps(step["ram_delta"])))
-    conn.commit()
-    conn.close()
-
-    return {
-        "status": "success",
-        "trace_id": trace_id,
-        "cycle_count": len(cycles),
-        "trace": cycles
-    }
+def get_execution_trace(address: str = "0x401000", input_data: str = "0x14530451", binary_path: str = None) -> dict:
+    """Runs Dynamic Oracle (Qiling/Unicorn) on a function and returns instruction state transition log."""
+    from pillar_2_dynamic.mock_os_runner import MockOSRunner
+    runner = MockOSRunner(db_path=DB_PATH)
+    return runner.run_trace(binary_path=binary_path, address=address, input_data=input_data)
 
 def commit_modernized_code(logic_hash: str, source_code: str, language: str = "cpp", filename: str = "modernized_func.cpp") -> dict:
     """Saves the final ported code to DB and writes it to target file in modernized/."""
@@ -145,7 +123,6 @@ def handle_json_rpc(request: dict) -> dict:
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--serve":
-        # Read JSON-RPC over Stdio
         for line in sys.stdin:
             line = line.strip()
             if not line:
