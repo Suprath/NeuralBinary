@@ -50,7 +50,18 @@ def get_execution_trace(address: str = "0x401000", input_data: str = "0x14530451
     """Runs Dynamic Oracle (Qiling/Unicorn) on a function and returns instruction state transition log."""
     from pillar_2_dynamic.mock_os_runner import MockOSRunner
     runner = MockOSRunner(db_path=DB_PATH)
-    return runner.run_trace(binary_path=binary_path, address=address, input_data=input_data)
+    return runner.run_trace(binary_path=binary_path, address=address, input_data=input_data, profile_execution=False)
+
+def analyze_performance_bottlenecks(address: str = "0x401000", input_data: str = "0x14530451", binary_path: str = None) -> dict:
+    """Runs CPU Profiler telemetry to identify tight loops, hotspot instructions, and memory write bottlenecks."""
+    from pillar_2_dynamic.mock_os_runner import MockOSRunner
+    runner = MockOSRunner(db_path=DB_PATH)
+    trace_res = runner.run_trace(binary_path=binary_path, address=address, input_data=input_data, profile_execution=True)
+    return {
+        "status": "success",
+        "address": address,
+        "bottleneck_profile": trace_res.get("bottleneck_profile", {})
+    }
 
 def commit_modernized_code(logic_hash: str, source_code: str, language: str = "cpp", filename: str = "modernized_func.cpp") -> dict:
     """Saves final ported code to DB, writes file, and runs dynamic differential verification."""
@@ -91,6 +102,7 @@ TOOLS = {
     "analyze_function_static": analyze_function_static,
     "solve_constraints": solve_constraints,
     "get_execution_trace": get_execution_trace,
+    "analyze_performance_bottlenecks": analyze_performance_bottlenecks,
     "commit_modernized_code": commit_modernized_code
 }
 

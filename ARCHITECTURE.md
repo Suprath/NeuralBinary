@@ -28,15 +28,18 @@ Lifts binary instructions into canonical **Normalized Semantic Expressions (NS-E
 
 ---
 
-## 3. Pillar II: Dynamic Oracle (`pillar_2_dynamic/mock_os_runner.py`)
+## 3. Pillar II: Dynamic Oracle & CPU Profiler (`pillar_2_dynamic/mock_os_runner.py`)
 
 ### What It Does
-Executes binary libraries inside a virtual sandboxed OS environment using **Qiling Framework** and **Unicorn Engine**.
+Executes binary libraries inside a virtual sandboxed OS environment using **Qiling Framework** and **Unicorn Engine**, while capturing CPU execution profiling telemetry (`ExecutionProfiler`).
 
 ### Why It Was Designed This Way
-- Intercepts CPU execution at every instruction cycle (`ql.hook_code`).
-- Extracts register states (`RAX`, `RBX`, `RSP` / ARM64 `X0`–`X30`), disassemblies, and RAM write deltas.
-- Streams cycle logs into `execution_traces` to provide **behavioral ground truth** for dynamic pointers, structure offsets, and system call boundaries.
+- **Dynamic Oracle Tracing**: Intercepts CPU execution at every instruction cycle (`ql.hook_code`), extracting register states (`RAX`, `RBX`, `RSP`), disassemblies, and RAM write deltas into `execution_traces`.
+- **CPU Bottleneck Analysis (`ExecutionProfiler`)**:
+  - Counts instruction hit frequencies (`instruction_counts`) to pinpoint tight loops.
+  - Tracks memory write hotspots (`memory_writes`).
+  - Generates actionable performance optimization suggestions (e.g. recommending loop unrolling or SIMD vectorization for instructions executed >1,000 times).
+  - Operating in non-intrusive mode ensures zero impact on standard reverse engineering traces.
 
 ---
 
@@ -67,7 +70,8 @@ Runs an Model Context Protocol (MCP) server over standard I/O (stdio) using JSON
 1. `analyze_function_static`: Invokes Pillar I Ghidra & NS-EX lifter, saving `logic_hash` to DB.
 2. `solve_constraints`: Runs native C++ `z_core` binary to solve branch constraints.
 3. `get_execution_trace`: Runs Qiling/Unicorn dynamic oracle and records register/RAM deltas.
-4. `commit_modernized_code`: Writes ported source code to `modernized/` directory, runs differential fuzzing, and updates DB.
+4. `analyze_performance_bottlenecks`: Runs CPU Profiler telemetry to pinpoint hot loops and memory write bottlenecks.
+5. `commit_modernized_code`: Writes ported source code to `modernized/` directory, runs differential fuzzing, and updates DB.
 
 ---
 
@@ -92,3 +96,4 @@ Automated integration test suite checking:
 4. Pillar IV Differential Fuzzing & dynamic compilation.
 5. MCP server tool functionality.
 6. Context packaging.
+7. CPU Profiler bottleneck telemetry (`test_07_cpu_profiler_bottlenecks`).

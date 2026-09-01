@@ -29,7 +29,7 @@ class TestNeuralBinaryPipeline(unittest.TestCase):
         """Test Pillar II Dynamic Oracle Qiling / Mock OS runner."""
         from pillar_2_dynamic.mock_os_runner import MockOSRunner
         runner = MockOSRunner(db_path=DB_PATH)
-        res = runner.run_trace(address="0x401000", input_data="0x14530451")
+        res = runner.run_trace(address="0x401000", input_data="0x14530451", profile_execution=False)
         self.assertEqual(res["status"], "success")
         self.assertEqual(res["cycle_count"], 4)
         self.assertIsNotNone(res["trace_id"])
@@ -55,22 +55,18 @@ class TestNeuralBinaryPipeline(unittest.TestCase):
         """Test MCP server tool functions without third-party cloud API dependencies."""
         from mcp_server.server import analyze_function_static, get_execution_trace, solve_constraints, commit_modernized_code
         
-        # 1. Static Analysis
         res1 = analyze_function_static("0x401000", "verify_key")
         self.assertEqual(res1["status"], "success")
         logic_hash = res1["logic_hash"]
 
-        # 2. Dynamic Trace
         res2 = get_execution_trace("0x401000", "0x14530451")
         self.assertEqual(res2["status"], "success")
         self.assertEqual(res2["cycle_count"], 4)
 
-        # 3. Constraint Solving (Z-Core Native C++)
         res3 = solve_constraints("0x401000", "0x401500")
         self.assertEqual(res3["status"], "success")
         self.assertIn("rax = 0x14530451", res3["z_core_proof"])
 
-        # 4. Commit Modernized Code File & Run Parity Test
         modern_code = """
         bool verify_key(uint64_t key) {
             return (key ^ 0xDEADBEEF) == 0xCAFEBABE;
@@ -80,7 +76,6 @@ class TestNeuralBinaryPipeline(unittest.TestCase):
         self.assertEqual(res4["status"], "success")
         self.assertEqual(res4["verification_status"], "VERIFIED_100_PERCENT_PARITY")
 
-        # 5. Verify file written on disk
         target_file = MODERNIZED_DIR / "modernized_verify_key.cpp"
         self.assertTrue(target_file.exists())
 
@@ -95,6 +90,16 @@ class TestNeuralBinaryPipeline(unittest.TestCase):
         ctx = assemble_synthesis_context(logic_hash)
         self.assertEqual(ctx["logic_hash"], logic_hash)
         self.assertEqual(ctx["function_name"], "verify_key")
+
+    def test_07_cpu_profiler_bottlenecks(self):
+        """Test CPU execution profiler telemetry for bottleneck detection."""
+        from mcp_server.server import analyze_performance_bottlenecks
+        res = analyze_performance_bottlenecks("0x401000", "0x14530451")
+        self.assertEqual(res["status"], "success")
+        profile = res["bottleneck_profile"]
+        self.assertIn("total_cycles_profiled", profile)
+        self.assertIn("top_hotspot_instructions", profile)
+        self.assertIn("optimization_suggestions", profile)
 
 if __name__ == "__main__":
     unittest.main()
