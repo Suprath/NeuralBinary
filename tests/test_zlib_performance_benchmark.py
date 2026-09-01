@@ -40,9 +40,9 @@ def run_performance_benchmarks():
         mod_adler_lib.adler32_modernized.argtypes = [ctypes.c_uint32, ctypes.c_char_p, ctypes.c_size_t]
         mod_adler_lib.adler32_modernized.restype = ctypes.c_uint32
 
-        # Compile CRC32 with -O3 -std=c++20
+        # Compile CRC32 with Hardware Acceleration (-march=armv8-a+crc -O3 -std=c++20)
         crc_so = Path(tmpdir) / "libmod_crc.dylib"
-        cmd = ["clang++", "-std=c++20", "-shared", "-fPIC", "-O3", str(MODERNIZED_CRC_CPP), "-o", str(crc_so)]
+        cmd = ["clang++", "-std=c++20", "-march=armv8-a+crc", "-shared", "-fPIC", "-O3", str(MODERNIZED_CRC_CPP), "-o", str(crc_so)]
         subprocess.run(cmd, capture_output=True, text=True, check=True)
 
         mod_crc_lib = ctypes.CDLL(str(crc_so))
@@ -57,7 +57,7 @@ def run_performance_benchmarks():
         total_bytes = payload_size * iterations
         total_mb = total_bytes / (1024 * 1024)
 
-        print(f"\n[Benchmark Configuration: {iterations} Iterations of {payload_size // (1024*1024)}MB Payload (Total Data: {total_mb:.1f} MB)]\n")
+        print(f"\n[Benchmark Configuration: {iterations} Iterations of 10MB Payload (Total Data: {total_mb:.1f} MB)]\n")
 
         # 1. Original libz adler32
         t0 = time.perf_counter()
@@ -67,7 +67,7 @@ def run_performance_benchmarks():
         orig_adler_time = t1 - t0
         orig_adler_tp = total_mb / orig_adler_time
 
-        # 2. Modernized C++ adler32 (NMAX Unrolled)
+        # 2. Modernized C++ adler32 (NMAX Unrolled + Fast Modulo)
         t0 = time.perf_counter()
         for _ in range(iterations):
             r2 = mod_adler_lib.adler32_modernized(1, test_payload, payload_size)
@@ -90,7 +90,7 @@ def run_performance_benchmarks():
         orig_crc_time = t1 - t0
         orig_crc_tp = total_mb / orig_crc_time
 
-        # 4. Modernized C++ crc32
+        # 4. Modernized C++ Hardware-Accelerated crc32
         t0 = time.perf_counter()
         for _ in range(iterations):
             c2 = mod_crc_lib.crc32_modernized(0, test_payload, payload_size)
@@ -101,13 +101,13 @@ def run_performance_benchmarks():
         parity_crc = (c1 == c2)
 
         print(f" -> Original zlib crc32:      {orig_crc_time:.4f} sec | {orig_crc_tp:>7.1f} MB/sec | Result: {hex(c1)}")
-        print(f" -> Modernized C++ crc32:    {mod_crc_time:.4f} sec | {mod_crc_tp:>7.1f} MB/sec | Result: {hex(c2)} | {'PARITY MATCH' if parity_crc else 'MISMATCH'}")
+        print(f" -> Modernized C++ HW crc32: {mod_crc_time:.4f} sec | {mod_crc_tp:>7.1f} MB/sec | Result: {hex(c2)} | {'PARITY MATCH' if parity_crc else 'MISMATCH'}")
         speedup_crc = (mod_crc_tp / orig_crc_tp) * 100
         print(f"    --> Speed Performance Ratio: {speedup_crc:.1f}% of native C speed")
 
         print("\n==================================================================")
         if parity_adler and parity_crc:
-            print(" SUCCESS: High-Performance Modernized zlib Benchmarked & Verified!")
+            print(" SUCCESS: Hardware-Accelerated Modernized zlib Benchmarked & Verified!")
         else:
             print(" WARNING: Parity error detected!")
         print("==================================================================")
