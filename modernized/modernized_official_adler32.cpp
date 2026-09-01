@@ -18,7 +18,8 @@ inline constexpr uint32_t mod65521(uint32_t a) {
 }
 
 /**
- * @brief High-performance Adler-32 checksum with NMAX chunked loop unrolling and division-free modulo.
+ * @brief High-performance Adler-32 checksum with 16-byte block unrolling and division-free modulo.
+ * Eliminates 93.75% of loop branch instruction overhead.
  */
 extern "C" uint32_t adler32_modernized(uint32_t adler, const uint8_t *buf, size_t len) {
     if (buf == nullptr) return 1U;
@@ -30,15 +31,37 @@ extern "C" uint32_t adler32_modernized(uint32_t adler, const uint8_t *buf, size_
         size_t k = (len < NMAX) ? len : NMAX;
         len -= k;
 
-        // Inner unrolled loop: zero division/modulo operations during chunk processing
-        for (size_t i = 0; i < k; ++i) {
-            s1 += buf[i];
+        // 16-byte block unrolled loop
+        while (k >= 16) {
+            s1 += buf[0];  s2 += s1;
+            s1 += buf[1];  s2 += s1;
+            s1 += buf[2];  s2 += s1;
+            s1 += buf[3];  s2 += s1;
+            s1 += buf[4];  s2 += s1;
+            s1 += buf[5];  s2 += s1;
+            s1 += buf[6];  s2 += s1;
+            s1 += buf[7];  s2 += s1;
+            s1 += buf[8];  s2 += s1;
+            s1 += buf[9];  s2 += s1;
+            s1 += buf[10]; s2 += s1;
+            s1 += buf[11]; s2 += s1;
+            s1 += buf[12]; s2 += s1;
+            s1 += buf[13]; s2 += s1;
+            s1 += buf[14]; s2 += s1;
+            s1 += buf[15]; s2 += s1;
+            buf += 16;
+            k -= 16;
+        }
+
+        // Remaining tail bytes
+        while (k > 0) {
+            s1 += *buf++;
             s2 += s1;
+            --k;
         }
 
         s1 = mod65521(s1);
         s2 = mod65521(s2);
-        buf += k;
     }
 
     return (s2 << 16) | s1;

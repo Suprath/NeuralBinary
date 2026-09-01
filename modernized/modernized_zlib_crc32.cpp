@@ -99,17 +99,52 @@ extern "C" uint32_t crc32_modernized(uint32_t crc, const uint8_t *buf, size_t le
     return crc ^ 0xFFFFFFFFU;
 }
 
+// GF(2) matrix multiplication helper for fast O(log N) crc32_combine
+static inline uint32_t gf2_matrix_times(const uint32_t *mat, uint32_t vec) {
+    uint32_t sum = 0;
+    while (vec) {
+        if (vec & 1) sum ^= *mat;
+        vec >>= 1;
+        mat++;
+    }
+    return sum;
+}
+
+static inline void gf2_matrix_square(uint32_t *square, const uint32_t *mat) {
+    for (int n = 0; n < 32; n++) {
+        square[n] = gf2_matrix_times(mat, mat[n]);
+    }
+}
+
 /**
- * @brief Combines two CRC-32 checksums for parallel stream processing.
+ * @brief Combines two CRC-32 checksums for parallel stream processing in O(log N) matrix steps.
  */
 extern "C" uint32_t crc32_combine_modernized(uint32_t crc1, uint32_t crc2, size_t len2) {
-    uint32_t row = CRC32_POLY;
-    uint32_t combine = crc1;
+    uint32_t even[32];
+    uint32_t odd[32];
 
+    if (len2 <= 0) return crc1;
+
+    // Build operator matrix
+    odd[0] = CRC32_POLY;
+    uint32_t row = 1;
+    for (int n = 1; n < 32; n++) {
+        odd[n] = row;
+        row <<= 1;
+    }
+
+    gf2_matrix_square(even, odd);
+    gf2_matrix_square(odd, even);
+
+    uint32_t combine = crc1;
     while (len2 > 0) {
-        if (len2 & 1) {
-            combine = (combine >> 1) ^ ((combine & 1) ? row : 0);
-        }
+        gf2_matrix_square(even, odd);
+        if (len2 & 1) combine = gf2_matrix_times(even, combine);
+        len2 >>= 1;
+        if (len2 == 0) break;
+
+        gf2_matrix_square(odd, even);
+        if (len2 & 1) combine = gf2_matrix_times(odd, combine);
         len2 >>= 1;
     }
 
