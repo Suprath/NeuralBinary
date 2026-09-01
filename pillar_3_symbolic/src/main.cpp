@@ -14,12 +14,12 @@ int main(int argc, char** argv) {
     auto initial_state = std::make_shared<ZCore::SimState>(claripy);
 
     // Setup input symbolic register RAX (e.g. key or user input)
-    z3::expr input_key = claripy.bv_const("input_key", 64);
-    initial_state->set_register("rax", input_key);
+    z3::expr input_key = claripy.bv_const(ZCore::Reg::RAX, 64);
+    initial_state->set_register(ZCore::Reg::RAX, input_key);
 
     // Instruction 1: RBX = RAX ^ 0xDEADBEEF
-    ZCore::PCodeInstruction instr1{ZCore::OpType::XOR, "rbx", "rax", "const_deadbeef", 0};
-    initial_state->set_register("const_deadbeef", claripy.bv_val(0xDEADBEEFULL, 64));
+    ZCore::PCodeInstruction instr1{ZCore::OpType::XOR, ZCore::Reg::RBX, ZCore::Reg::RAX, ZCore::Reg::CONST_VAL, 0};
+    initial_state->set_register(ZCore::Reg::CONST_VAL, claripy.bv_val(0xDEADBEEFULL, 64));
     auto states_after_instr1 = engine.step(initial_state, instr1);
 
     if (states_after_instr1.empty()) {
@@ -29,13 +29,13 @@ int main(int argc, char** argv) {
     auto state = states_after_instr1[0];
 
     // Instruction 2: CMP_EQ rbx, 0xCAFEBABE
-    initial_state->set_register("target_val", claripy.bv_val(0xCAFEBABEULL, 64));
-    ZCore::PCodeInstruction instr2{ZCore::OpType::CMP_EQ, "cond_flag", "rbx", "target_val", 0};
+    initial_state->set_register(ZCore::Reg::TARGET_VAL, claripy.bv_val(0xCAFEBABEULL, 64));
+    ZCore::PCodeInstruction instr2{ZCore::OpType::CMP_EQ, ZCore::Reg::COND_FLAG, ZCore::Reg::RBX, ZCore::Reg::TARGET_VAL, 0};
     auto states_after_instr2 = engine.step(state, instr2);
     state = states_after_instr2[0];
 
     // Instruction 3: BRANCH_IF cond_flag -> 0x401500 (Secret Bypass target)
-    ZCore::PCodeInstruction branch_instr{ZCore::OpType::BRANCH_IF, "", "cond_flag", "", 0x401500};
+    ZCore::PCodeInstruction branch_instr{ZCore::OpType::BRANCH_IF, ZCore::Reg::COND_FLAG, ZCore::Reg::COND_FLAG, ZCore::Reg::COND_FLAG, 0x401500};
     auto branched_states = engine.step(state, branch_instr);
 
     std::cout << "Discovered " << branched_states.size() << " feasible execution paths." << std::endl;

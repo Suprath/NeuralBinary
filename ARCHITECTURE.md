@@ -9,7 +9,7 @@ This document details every component, file, and subsystem in **NeuralBinary Glo
 ### What It Does
 - `docker-compose.yml`: Launches PostgreSQL 15 with TimescaleDB extension in a Docker container (`docker-compose up -d`).
 - `database/schema.sql`: Defines `binary_mappings` and `execution_traces`.
-- `database/db_client.py`: Database client that connects to PostgreSQL when Docker is running, or falls back to SQLite (`neural_binary.db`) for local zero-config testing.
+- `database/db_client.py`: Database client that connects to PostgreSQL when Docker is running, or falls back to SQLite (`neural_binary.db`). Optimized with `batch_insert_traces()` using `executemany` for high-throughput 100k-row commits.
 
 ---
 
@@ -20,7 +20,7 @@ Lifts binary instructions into canonical **Normalized Semantic Expressions (NS-E
 
 ### Why It Was Designed This Way
 - **`pillar_1_static/nsex_lifter.py`**:
-  - Normalizes disassembly/P-code expressions by stripping variable offset variations to produce canonical S-expressions (`(PCODE_FUNCTION ...)`).
+  - Uses fast single-pass tokenization (replacing slow regex patterns) to normalize disassembly/P-code expressions into canonical S-expressions (`(PCODE_FUNCTION ...)`).
   - Computes the canonical SHA-256 `logic_hash` used as the master key across the entire platform.
 - **`pillar_1_static/ghidra_headless_runner.py`**:
   - Automates Ghidra Headless analysis without launching the GUI.
@@ -38,8 +38,7 @@ Executes binary libraries inside a virtual sandboxed OS environment using **Qili
 - **CPU Bottleneck Analysis (`ExecutionProfiler`)**:
   - Counts instruction hit frequencies (`instruction_counts`) to pinpoint tight loops.
   - Tracks memory write hotspots (`memory_writes`).
-  - Generates actionable performance optimization suggestions (e.g. recommending loop unrolling or SIMD vectorization for instructions executed >1,000 times).
-  - Operating in non-intrusive mode ensures zero impact on standard reverse engineering traces.
+  - Generates actionable performance optimization suggestions.
 
 ---
 
@@ -52,9 +51,10 @@ A native C++ port of core `angr` modules (`SimState`, `Claripy`, `SimEngine`, `C
 Standard Python `angr` consumes 32GB–64GB+ of RAM due to Python object overhead and unconstrained state copying. `Z-Core` solves this through:
 
 - **`include/z_core.hpp`**:
-  - **`ClaripyEngine` (Module B)**: Implements Bit-Vector Interning (`symbol_cache_`). Reuses Z3 AST pointers (`z3::expr`) in C++ memory so identical expressions are allocated once.
+  - **$O(1)$ Register Indexing**: Uses `enum class Reg : uint8_t` and `std::array<std::optional<z3::expr>, 32>` instead of `std::string` hash maps. Lookups are direct memory offsets ($O(1)$, zero string allocation).
+  - **`ClaripyEngine` (Module B)**: Implements Bit-Vector Interning (`symbol_cache_`). Reuses Z3 AST pointers (`z3::expr`) in C++ memory.
   - **`SimState` (Module A)**: Implements Copy-on-Write state cloning (`SimState(const SimState& other)`). Register maps use C++ value semantics with Z3 handle reference counting.
-  - **`SimEngine` (Module C)**: Fast dispatch loop executing IR statements on `SimState`. Handles `BRANCH_IF` state splitting into branch taken and branch not taken, checking feasibility via Z3 `solver_.check()`.
+  - **`SimEngine` (Module C)**: Fast O(1) dispatch loop executing IR statements on `SimState`. Handles `BRANCH_IF` state splitting.
   - **`CLELoader` (Module D)**: Maps virtual address sections (`map_section`, `is_mapped`).
 
 - **`src/main.cpp`**: Executable main driver. Demonstrates constraint path solving on symbolic register inputs (`rax ^ 0xDEADBEEF == 0xCAFEBABE`), returning SAT solutions (`rax = 0x14530451`).

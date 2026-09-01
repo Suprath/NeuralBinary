@@ -1,6 +1,7 @@
 import os
 import sqlite3
 from pathlib import Path
+from typing import List, Tuple, Any
 
 ROOT_DIR = Path(__file__).parent.parent
 SQLITE_DB_PATH = ROOT_DIR / "database" / "neural_binary.db"
@@ -10,6 +11,7 @@ class DatabaseClient:
     """
     Database Interface for NeuralBinary Global.
     Supports PostgreSQL (Docker container) and SQLite fallback for local development.
+    Optimized for high-throughput batch transactions via executemany.
     """
 
     def __init__(self):
@@ -20,7 +22,6 @@ class DatabaseClient:
         self.pg_password = os.getenv("POSTGRES_PASSWORD", "neural_password")
 
     def get_connection(self):
-        # Try PostgreSQL connection if psycopg2 or asyncpg is installed
         try:
             import psycopg2
             conn = psycopg2.connect(
@@ -32,7 +33,6 @@ class DatabaseClient:
             )
             return conn, "postgres"
         except Exception:
-            # SQLite local fallback
             SQLITE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
             conn = sqlite3.connect(SQLITE_DB_PATH)
             return conn, "sqlite"
@@ -51,6 +51,27 @@ class DatabaseClient:
             cursor.execute(schema_sql)
             conn.commit()
             conn.close()
+
+    def batch_insert_traces(self, trace_rows: List[Tuple[Any, ...]]):
+        """
+        Fast batch transaction insert for thousands of execution cycle traces.
+        """
+        conn, engine = self.get_connection()
+        cursor = conn.cursor()
+        sql = """
+            INSERT OR REPLACE INTO execution_traces 
+            (trace_id, cycle_count, instruction_pointer, disassembly, register_state, memory_delta)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """ if engine == "sqlite" else """
+            INSERT INTO execution_traces 
+            (trace_id, cycle_count, instruction_pointer, disassembly, register_state, memory_delta)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (trace_id, cycle_count) DO UPDATE 
+            SET instruction_pointer = EXCLUDED.instruction_pointer;
+        """
+        cursor.executemany(sql, trace_rows)
+        conn.commit()
+        conn.close()
 
 if __name__ == "__main__":
     db = DatabaseClient()

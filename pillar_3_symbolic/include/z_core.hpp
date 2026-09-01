@@ -4,11 +4,40 @@
 #include <z3++.h>
 #include <string>
 #include <unordered_map>
+#include <array>
+#include <optional>
 #include <memory>
 #include <vector>
 #include <iostream>
 
 namespace ZCore {
+
+// Fast Enum for O(1) Register Array Indexing (Zero String Allocation)
+enum class Reg : uint8_t {
+    RAX = 0, RBX = 1, RCX = 2, RDX = 3,
+    RSI = 4, RDI = 5, RSP = 6, RBP = 7,
+    R8  = 8, R9  = 9, R10 = 10, R11 = 11,
+    R12 = 12, R13 = 13, R14 = 14, R15 = 15,
+    COND_FLAG = 16, TARGET_VAL = 17, CONST_VAL = 18,
+    MAX_REGS = 32
+};
+
+inline const char* reg_to_string(Reg r) {
+    switch (r) {
+        case Reg::RAX: return "rax";
+        case Reg::RBX: return "rbx";
+        case Reg::RCX: return "rcx";
+        case Reg::RDX: return "rdx";
+        case Reg::RSI: return "rsi";
+        case Reg::RDI: return "rdi";
+        case Reg::RSP: return "rsp";
+        case Reg::RBP: return "rbp";
+        case Reg::COND_FLAG: return "cond_flag";
+        case Reg::TARGET_VAL: return "target_val";
+        case Reg::CONST_VAL: return "const_deadbeef";
+        default: return "custom_reg";
+    }
+}
 
 // ============================================================================
 // Module B: Claripy (AST Engine with Bit-Vector Interning)
@@ -17,18 +46,25 @@ class ClaripyEngine {
 public:
     ClaripyEngine(z3::context& ctx) : ctx_(ctx) {}
 
-    z3::expr bv_const(const std::string& name, unsigned bits) {
-        auto key = name + ":" + std::to_string(bits);
-        auto it = symbol_cache_.find(key);
-        if (it != symbol_cache_.end()) {
-            return it->second;
+    z3::expr bv_const(Reg reg, unsigned bits = 64) {
+        uint8_t idx = static_cast<uint8_t>(reg);
+        if (symbol_cache_[idx].has_value()) {
+            return symbol_cache_[idx].value();
         }
-        z3::expr sym = ctx_.bv_const(name.c_str(), bits);
-        symbol_cache_.insert({key, sym});
+        z3::expr sym = ctx_.bv_const(reg_to_string(reg), bits);
+        symbol_cache_[idx] = sym;
         return sym;
     }
 
-    z3::expr bv_val(uint64_t val, unsigned bits) {
+    z3::expr bv_const(const std::string& name, unsigned bits = 64) {
+        auto it = custom_cache_.find(name);
+        if (it != custom_cache_.end()) return it->second;
+        z3::expr sym = ctx_.bv_const(name.c_str(), bits);
+        custom_cache_.insert({name, sym});
+        return sym;
+    }
+
+    z3::expr bv_val(uint64_t val, unsigned bits = 64) {
         return ctx_.bv_val(val, bits);
     }
 
@@ -36,17 +72,18 @@ public:
 
 private:
     z3::context& ctx_;
-    std::unordered_map<std::string, z3::expr> symbol_cache_;
+    std::array<std::optional<z3::expr>, static_cast<size_t>(Reg::MAX_REGS)> symbol_cache_;
+    std::unordered_map<std::string, z3::expr> custom_cache_;
 };
 
 // ============================================================================
-// Module A: SimState (Copy-on-Write Register Snapshot Manager)
+// Module A: SimState (O(1) Indexed Register Snapshot Manager)
 // ============================================================================
 class SimState {
 public:
     SimState(ClaripyEngine& claripy) : claripy_(claripy), solver_(claripy.ctx()) {}
 
-    // Copy constructor cloning registers and Z3 solver assertions
+    // Copy-on-Write Copy Constructor
     SimState(const SimState& other) 
         : claripy_(other.claripy_),
           registers_(other.registers_),
@@ -57,22 +94,17 @@ public:
         }
     }
 
-    void set_register(const std::string& reg_name, const z3::expr& val) {
-        auto it = registers_.find(reg_name);
-        if (it != registers_.end()) {
-            it->second = val;
-        } else {
-            registers_.insert({reg_name, val});
-        }
+    void set_register(Reg reg, const z3::expr& val) {
+        registers_[static_cast<size_t>(reg)] = val;
     }
 
-    z3::expr get_register(const std::string& reg_name, unsigned default_bits = 64) {
-        auto it = registers_.find(reg_name);
-        if (it != registers_.end()) {
-            return it->second;
+    z3::expr get_register(Reg reg, unsigned default_bits = 64) {
+        size_t idx = static_cast<size_t>(reg);
+        if (registers_[idx].has_value()) {
+            return registers_[idx].value();
         }
-        z3::expr sym = claripy_.bv_const(reg_name, default_bits);
-        registers_.insert({reg_name, sym});
+        z3::expr sym = claripy_.bv_const(reg, default_bits);
+        registers_[idx] = sym;
         return sym;
     }
 
@@ -89,11 +121,14 @@ public:
         std::unordered_map<std::string, uint64_t> solution;
         if (solver_.check() == z3::sat) {
             z3::model m = solver_.get_model();
-            for (const auto& [reg, expr] : registers_) {
-                if (expr.is_bv()) {
-                    z3::expr eval_res = m.eval(expr, true);
-                    if (eval_res.is_numeral()) {
-                        solution[reg] = eval_res.get_numeral_uint64();
+            for (size_t i = 0; i < static_cast<size_t>(Reg::MAX_REGS); ++i) {
+                if (registers_[i].has_value()) {
+                    z3::expr expr = registers_[i].value();
+                    if (expr.is_bv()) {
+                        z3::expr eval_res = m.eval(expr, true);
+                        if (eval_res.is_numeral()) {
+                            solution[reg_to_string(static_cast<Reg>(i))] = eval_res.get_numeral_uint64();
+                        }
                     }
                 }
             }
@@ -105,7 +140,7 @@ public:
 
 private:
     ClaripyEngine& claripy_;
-    std::unordered_map<std::string, z3::expr> registers_;
+    std::array<std::optional<z3::expr>, static_cast<size_t>(Reg::MAX_REGS)> registers_;
     std::vector<z3::expr> constraints_;
     z3::solver solver_;
 };
@@ -137,15 +172,15 @@ private:
 };
 
 // ============================================================================
-// Module C: SimEngine (P-Code / Symbolic Execution Dispatcher)
+// Module C: SimEngine (Fast O(1) Instruction Dispatcher)
 // ============================================================================
 enum class OpType { ADD, SUB, XOR, CMP_EQ, CMP_GT, BRANCH_IF };
 
 struct PCodeInstruction {
     OpType op;
-    std::string dest;
-    std::string src1;
-    std::string src2;
+    Reg dest;
+    Reg src1;
+    Reg src2;
     uint64_t target_addr;
 };
 
