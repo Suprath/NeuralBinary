@@ -1,6 +1,7 @@
-// Modernized High-Performance C++20 Implementation of zlib CRC32 Checksum (Slice-by-8 Optimized)
+// Modernized High-Performance C++20 Implementation of zlib CRC32 Checksum (Slice-by-8 Direct 64-bit Fetch)
 #include <cstdint>
 #include <cstddef>
+#include <cstring>
 #include <array>
 
 namespace ModernizedZlib {
@@ -30,25 +31,22 @@ struct Slice8Table {
 constexpr Slice8Table SLICE8_TABLE{};
 
 /**
- * @brief High-performance Slice-by-8 32-bit IEEE 802.3 CRC32 checksum.
- * Processes 8 bytes per iteration for multi-gigabyte throughput.
+ * @brief High-performance Slice-by-8 32-bit IEEE 802.3 CRC32 checksum with direct 64-bit memory load.
  */
 extern "C" uint32_t crc32_modernized(uint32_t crc, const uint8_t *buf, size_t len) {
     if (buf == nullptr) return 0U;
 
     crc = crc ^ 0xFFFFFFFFU;
 
-    // Process 8-byte chunks in parallel
+    // Process 8-byte chunks using direct 64-bit memory load
     while (len >= 8) {
-        crc ^= (static_cast<uint32_t>(buf[0]) |
-               (static_cast<uint32_t>(buf[1]) << 8) |
-               (static_cast<uint32_t>(buf[2]) << 16) |
-               (static_cast<uint32_t>(buf[3]) << 24));
+        uint64_t chunk;
+        std::memcpy(&chunk, buf, sizeof(uint64_t));
 
-        uint32_t high = (static_cast<uint32_t>(buf[4]) |
-                        (static_cast<uint32_t>(buf[5]) << 8) |
-                        (static_cast<uint32_t>(buf[6]) << 16) |
-                        (static_cast<uint32_t>(buf[7]) << 24));
+        uint32_t low = static_cast<uint32_t>(chunk);
+        uint32_t high = static_cast<uint32_t>(chunk >> 32);
+
+        crc ^= low;
 
         crc = SLICE8_TABLE.table[7][crc & 0xFF] ^
               SLICE8_TABLE.table[6][(crc >> 8) & 0xFF] ^
@@ -63,7 +61,7 @@ extern "C" uint32_t crc32_modernized(uint32_t crc, const uint8_t *buf, size_t le
         len -= 8;
     }
 
-    // Remaining tail bytes
+    // Tail bytes
     while (len > 0) {
         crc = SLICE8_TABLE.table[0][(crc ^ *buf) & 0xFF] ^ (crc >> 8);
         buf++;
