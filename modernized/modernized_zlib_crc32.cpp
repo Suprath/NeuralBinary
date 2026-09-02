@@ -1,9 +1,22 @@
 // Modernized High-Performance C++20 Implementation of zlib CRC32 Checksum
-// Integrates Hardware-Accelerated CPU Silicon Instructions (ARM64 / x86_64)
+// Integrates Hardware-Accelerated CPU Silicon Instructions (ARM64 / x86_64 / MSVC)
 #include <cstdint>
 #include <cstddef>
 #include <cstring>
 #include <array>
+
+#if defined(_MSC_VER)
+  #include <intrin.h>
+  #if defined(_M_ARM64)
+    #include <arm64_neon.h>
+  #elif defined(_M_X64)
+    #include <nmmintrin.h>
+  #endif
+#elif defined(__x86_64__)
+  #include <nmmintrin.h>
+#elif defined(__aarch64__) || defined(__ARM_FEATURE_CRC32)
+  #include <arm_acle.h>
+#endif
 
 namespace ModernizedZlib {
 
@@ -33,7 +46,8 @@ constexpr Slice8Table SLICE8_TABLE{};
 
 /**
  * @brief High-performance 32-bit IEEE 802.3 CRC32 checksum.
- * Uses ARM64 Hardware Silicon instructions (crc32x / crc32b) with word-alignment pre-conditioning.
+ * Supports ARM64 crc32x, Intel x86_64 SSE4.2 _mm_crc32_u64, MSVC intrinsics,
+ * and Slice-by-8 software fallback.
  */
 extern "C" uint32_t crc32_modernized(uint32_t crc, const uint8_t *buf, size_t len) {
     if (buf == nullptr) return 0U;
@@ -41,14 +55,13 @@ extern "C" uint32_t crc32_modernized(uint32_t crc, const uint8_t *buf, size_t le
     crc = (~crc) & 0xFFFFFFFFU;
 
 #if defined(__aarch64__) || defined(__ARM_FEATURE_CRC32)
-    // 1. Process unaligned head bytes up to 8-byte boundary
+    // 1. ARM64 Hardware Path (Clang / GCC)
     while (len > 0 && (reinterpret_cast<uintptr_t>(buf) & 7) != 0) {
         uint32_t val = *buf++;
         __asm__ volatile("crc32b %w0, %w0, %w1" : "+r"(crc) : "r"(val));
         len--;
     }
 
-    // 2. Process full 64-bit words using hardware crc32x instruction (1 cycle per 8 bytes)
     const uint64_t *word = reinterpret_cast<const uint64_t *>(buf);
     size_t num = len >> 3;
     len &= 7;
@@ -58,15 +71,49 @@ extern "C" uint32_t crc32_modernized(uint32_t crc, const uint8_t *buf, size_t le
         __asm__ volatile("crc32x %w0, %w0, %x1" : "+r"(crc) : "r"(val64));
     }
 
-    // 3. Process remaining tail bytes
     buf = reinterpret_cast<const uint8_t *>(word + num);
     while (len > 0) {
         uint32_t val = *buf++;
         __asm__ volatile("crc32b %w0, %w0, %w1" : "+r"(crc) : "r"(val));
         len--;
     }
+
+#elif defined(__x86_64__)
+    // 2. Intel / AMD x86_64 SSE4.2 Hardware Path (Clang / GCC)
+    uint64_t crc64 = crc;
+    while (len >= 8) {
+        uint64_t val64;
+        std::memcpy(&val64, buf, sizeof(uint64_t));
+        crc64 = _mm_crc32_u64(crc64, val64);
+        buf += 8;
+        len -= 8;
+    }
+    crc = static_cast<uint32_t>(crc64);
+
+    while (len > 0) {
+        crc = _mm_crc32_u8(crc, *buf++);
+        len--;
+    }
+
+#elif defined(_MSC_VER) && defined(_M_X64)
+    // 3. MSVC Windows x86_64 Hardware Path
+    uint64_t crc64 = crc;
+    while (len >= 8) {
+        uint64_t val64;
+        std::memcpy(&val64, buf, sizeof(uint64_t));
+        crc64 = _mm_crc32_u64(crc64, val64);
+        buf += 8;
+        len -= 8;
+    }
+    crc = static_cast<uint32_t>(crc64);
+
+    while (len > 0) {
+        crc = _mm_crc32_u8(crc, *buf++);
+        len--;
+    }
+
 #else
-    // Software Slice-by-8 Fallback
+    // 4. Universal Software Slice-by-8 Fallback
     while (len >= 8) {
         uint64_t chunk;
         std::memcpy(&chunk, buf, sizeof(uint64_t));
@@ -99,7 +146,9 @@ extern "C" uint32_t crc32_modernized(uint32_t crc, const uint8_t *buf, size_t le
     return crc ^ 0xFFFFFFFFU;
 }
 
-// GF(2) matrix multiplication helper for fast O(log N) crc32_combine
+/**
+ * @brief Combines two CRC-32 checksums for parallel stream processing in O(log N) matrix steps.
+ */
 static inline uint32_t gf2_matrix_times(const uint32_t *mat, uint32_t vec) {
     uint32_t sum = 0;
     while (vec) {
@@ -116,16 +165,12 @@ static inline void gf2_matrix_square(uint32_t *square, const uint32_t *mat) {
     }
 }
 
-/**
- * @brief Combines two CRC-32 checksums for parallel stream processing in O(log N) matrix steps.
- */
 extern "C" uint32_t crc32_combine_modernized(uint32_t crc1, uint32_t crc2, size_t len2) {
     uint32_t even[32];
     uint32_t odd[32];
 
     if (len2 <= 0) return crc1;
 
-    // Build operator matrix
     odd[0] = CRC32_POLY;
     uint32_t row = 1;
     for (int n = 1; n < 32; n++) {
