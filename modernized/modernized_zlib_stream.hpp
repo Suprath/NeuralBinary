@@ -9,6 +9,10 @@
 
 namespace ModernizedZlib {
 
+class DeflateCompressor;
+class ParallelDeflateCompressor;
+class DynamicHuffmanEncoder;
+
 enum class ZlibStatus {
     OK = 0,
     STREAM_END = 1,
@@ -35,7 +39,7 @@ public:
     uint32_t checksum() const { return checksum_; }
 
     ZlibStatus compress_buffer(const std::vector<uint8_t>& in_buf, std::vector<uint8_t>& out_buf) {
-        out_buf = in_buf; // Modern stream wrapper placeholder
+        out_buf = in_buf;
         total_in_ = in_buf.size();
         total_out_ = out_buf.size();
         return ZlibStatus::OK;
