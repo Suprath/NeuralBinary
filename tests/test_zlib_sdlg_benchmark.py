@@ -54,7 +54,9 @@ def run_sdlg_benchmarks():
             f.write(cpp_code)
 
         so_file = Path(tmpdir) / "libsdlg_test.dylib"
-        cmd = ["clang++", "-std=c++20", "-shared", "-fPIC", "-O3", str(src_cpp), "-o", str(so_file)]
+        adler_cpp = ROOT_DIR / "modernized" / "modernized_official_adler32.cpp"
+        crc_cpp = ROOT_DIR / "modernized" / "modernized_zlib_crc32.cpp"
+        cmd = ["clang++", "-std=c++20", "-march=armv8-a+crc", "-shared", "-fPIC", "-O3", str(src_cpp), str(adler_cpp), str(crc_cpp), "-o", str(so_file)]
         subprocess.run(cmd, capture_output=True, text=True, check=True)
 
         sdlg_lib = ctypes.CDLL(str(so_file))
