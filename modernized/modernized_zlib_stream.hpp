@@ -12,6 +12,8 @@ namespace ModernizedZlib {
 class DeflateCompressor;
 class ParallelDeflateCompressor;
 class DynamicHuffmanEncoder;
+class MmapStreamer;
+class PresetDictionaryEngine;
 
 enum class ZlibStatus {
     OK = 0,
