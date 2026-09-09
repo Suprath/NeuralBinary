@@ -21,6 +21,7 @@ set(SOURCES
     modernized/modernized_official_adler32.cpp
     modernized/modernized_zlib_crc32.cpp
     modernized/modernized_zlib_c_api.cpp
+    modernized/modernized_zlib_deflate.cpp   # Concern D: framing layer compiled once
 )
 
 # Static Library
