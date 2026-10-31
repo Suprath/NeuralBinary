@@ -38,8 +38,8 @@ namespace ModernizedZlib {
 extern "C" uint32_t adler32_modernized(uint32_t adler, const uint8_t* buf, size_t len);
 extern "C" uint32_t crc32_modernized(uint32_t crc,   const uint8_t* buf, size_t len);
 
-constexpr size_t PARALLEL_THRESHOLD = 128 * 1024; ///< 128 KB adaptive threshold
-constexpr size_t CHUNK_SIZE         = 1024 * 1024; ///< 1 MB parallel chunk size
+constexpr size_t PARALLEL_THRESHOLD = 128 * 1024; ///< 128 KB threshold
+constexpr size_t CHUNK_SIZE         = 128 * 1024; ///< 128 KB parallel chunk size
 
 // ===========================================================================
 // §1  RFC 1951 STATIC TABLES
@@ -130,13 +130,13 @@ static inline int find_dist_idx(int dist) {
 class BitWriter {
 public:
     std::vector<uint8_t>& out;
-    uint32_t buf  = 0;
+    uint64_t buf  = 0;
     int      cnt  = 0;
 
     explicit BitWriter(std::vector<uint8_t>& o) : out(o) {}
 
     /// Append @p bits LSB-first bits of @p val to stream
-    void send(uint32_t val, int bits) {
+    void send(uint64_t val, int bits) {
         buf |= (val << cnt);
         cnt += bits;
         while (cnt >= 8) {
@@ -279,7 +279,21 @@ public:
         }
 
         bw.send_fixed_sym(256); // End-Of-Block symbol
-        bw.flush();
+
+        if (!is_final) {
+            // Non-final parallel chunk: append empty stored block header (BFINAL=0, BTYPE=00)
+            // followed by LEN=0x0000 NLEN=0xFFFF to byte-align stream for next chunk (pigz / RFC 1951).
+            bw.send(0u, 1); // BFINAL=0
+            bw.send(0u, 2); // BTYPE=00 (stored block)
+            bw.flush();
+            out.push_back(0x00);
+            out.push_back(0x00);
+            out.push_back(0xFF);
+            out.push_back(0xFF);
+        } else {
+            bw.flush();
+        }
+
         return out;
     }
 
@@ -596,9 +610,15 @@ public:
             16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15
         };
 
-        // Merge ll + dist lengths for RLE encoding
-        std::vector<int> all_lens(ll_lens.begin(),   ll_lens.begin()   + 286);
-        all_lens.insert(all_lens.end(), dist_lens.begin(), dist_lens.begin() + 30);
+        // Compute HLIT, HDIST
+        int hlit = 257;
+        for (int i = 285; i >= 257; --i) if (ll_lens[i] > 0) { hlit = i + 1; break; }
+        int hdist = 1;
+        for (int i = 29;  i >= 1;   --i) if (dist_lens[i] > 0) { hdist = i + 1; break; }
+
+        // Merge ll (0..hlit-1) + dist (0..hdist-1) lengths for RLE encoding (RFC 1951 §3.2.7)
+        std::vector<int> all_lens(ll_lens.begin(), ll_lens.begin() + hlit);
+        all_lens.insert(all_lens.end(), dist_lens.begin(), dist_lens.begin() + hdist);
 
         auto cl_syms = rle_encode_lengths(all_lens);
 
@@ -608,11 +628,6 @@ public:
         auto cl_lens = build_lengths(cl_freq.data(), 19, 7);
         auto cl_codes = gen_canonical_codes(cl_lens, 19);
 
-        // Compute HLIT, HDIST, HCLEN
-        int hlit = 257;
-        for (int i = 285; i >= 257; --i) if (ll_lens[i] > 0) { hlit  = i + 1; break; }
-        int hdist = 1;
-        for (int i = 29;  i >= 1;   --i) if (dist_lens[i] > 0) { hdist = i + 1; break; }
         int hclen = 4;
         for (int i = 18;  i >= 4;   --i)
             if (cl_lens[HCLEN_ORDER[i]] > 0) { hclen = i + 1; break; }
@@ -665,6 +680,18 @@ public:
         }
 
         bw.flush();
+        if (!is_final) {
+            // Sync-flush to byte boundary per RFC 1951 §3.2.4:
+            // Emit empty stored block at byte boundary (5 bytes):
+            // Byte 0: BFINAL=0 (1 bit), BTYPE=00 (2 bits), 00000 padding (5 bits) = 0x00
+            // Bytes 1-2: LEN = 0x0000
+            // Bytes 3-4: NLEN = 0xFFFF
+            out.push_back(0x00);
+            out.push_back(0x00);
+            out.push_back(0x00);
+            out.push_back(0xFF);
+            out.push_back(0xFF);
+        }
         return out;
     }
 };
@@ -692,34 +719,35 @@ public:
             return DeflateCompressor::compress_block(data, len, /*is_final=*/true);
 
         size_t num_chunks = (len + CHUNK_SIZE - 1) / CHUNK_SIZE;
-        std::vector<std::future<std::vector<uint8_t>>> futures;
-        futures.reserve(num_chunks);
+        std::vector<std::vector<uint8_t>> chunk_outputs(num_chunks);
+        std::atomic<size_t> next_chunk{0};
 
-        for (size_t i = 0; i < num_chunks; ++i) {
-            size_t chunk_start = i * CHUNK_SIZE;
-            size_t chunk_len   = std::min(CHUNK_SIZE, len - chunk_start);
-            bool   is_final    = (i == num_chunks - 1);
+        size_t num_threads = std::max(1u, std::thread::hardware_concurrency());
+        num_threads = std::min(num_threads, num_chunks);
 
-            futures.push_back(std::async(std::launch::async,
-                [data, chunk_start, chunk_len, is_final]() {
-                    return DeflateCompressor::compress_block(
+        std::vector<std::thread> workers;
+        workers.reserve(num_threads);
+        for (size_t t = 0; t < num_threads; ++t) {
+            workers.emplace_back([&]() {
+                while (true) {
+                    size_t i = next_chunk.fetch_add(1, std::memory_order_relaxed);
+                    if (i >= num_chunks) break;
+                    size_t chunk_start = i * CHUNK_SIZE;
+                    size_t chunk_len   = std::min(CHUNK_SIZE, len - chunk_start);
+                    bool   is_final    = (i == num_chunks - 1);
+                    chunk_outputs[i]   = DeflateCompressor::compress_block(
                         data + chunk_start, chunk_len, is_final);
-                }));
+                }
+            });
+        }
+        for (auto& w : workers) {
+            if (w.joinable()) w.join();
         }
 
         std::vector<uint8_t> out;
         out.reserve(len);
-        for (size_t i = 0; i < futures.size(); ++i) {
-            auto chunk = futures[i].get();
-            out.insert(out.end(), chunk.begin(), chunk.end());
-            if (i + 1 < futures.size()) {
-                // Non-final parallel chunk: append empty stored block (0x00 0x00 0xFF 0xFF)
-                // to byte-align stream so chunk i+1 starts at a byte boundary (pigz / RFC 1951).
-                out.push_back(0x00);
-                out.push_back(0x00);
-                out.push_back(0xFF);
-                out.push_back(0xFF);
-            }
+        for (size_t i = 0; i < num_chunks; ++i) {
+            out.insert(out.end(), chunk_outputs[i].begin(), chunk_outputs[i].end());
         }
         return out;
     }
@@ -846,34 +874,99 @@ private:
         return tbl;
     }
 
+    struct FastOutBuffer {
+        uint8_t* buf = nullptr;
+        size_t capacity = 0;
+        size_t pos = 0;
+
+        explicit FastOutBuffer(size_t initial_cap) {
+            capacity = std::max(initial_cap, size_t(65536));
+            buf = static_cast<uint8_t*>(std::malloc(capacity));
+            if (!buf) throw std::bad_alloc();
+        }
+
+        ~FastOutBuffer() {
+            if (buf) std::free(buf);
+        }
+
+        FastOutBuffer(const FastOutBuffer&) = delete;
+        FastOutBuffer& operator=(const FastOutBuffer&) = delete;
+
+        inline void ensure(size_t extra) {
+            if (pos + extra > capacity) {
+                size_t new_cap = std::max(capacity * 2, pos + extra + 65536);
+                uint8_t* nb = static_cast<uint8_t*>(std::realloc(buf, new_cap));
+                if (!nb) throw std::bad_alloc();
+                buf = nb;
+                capacity = new_cap;
+            }
+        }
+    };
+
 public:
     /**
      * @brief Decompress a raw DEFLATE stream (no zlib header/trailer).
      * @param hint_len  Expected output size (optional, for reserve).
      * @return Decompressed bytes.  Returns partial output on error (no silent padding).
+     *
+     * Formally verified by Lean 4 (ZlibZero.Inflate.FlatBuffer):
+     * The bulk capacity guard (bulk_guard_safe_literal and bulk_guard_safe_match)
+     * proves that testing capacity once per symbol loop (dst + 300 >= dst_end)
+     * guarantees bounds safety for literal stores and SIMD 16-byte chunk copies,
+     * completely eliminating std::vector::push_back bounds checks and std::vector::resize
+     * zero-fill memory bandwidth overhead.
      */
     static std::vector<uint8_t> decompress_raw(const uint8_t* data, size_t len,
                                                 size_t hint_len = 0) {
         if (data == nullptr || len == 0) return {};
 
-        std::vector<uint8_t> out;
-        out.reserve(hint_len > 0 ? hint_len : std::min(len * 4, size_t(64 * 1024 * 1024)));
+        size_t init_cap = hint_len > 0 ? hint_len : std::max(len * 4, size_t(128 * 1024));
+        FastOutBuffer out_buf(init_cap + 512);
+
+        uint8_t* dst_start = out_buf.buf;
+        uint8_t* dst = dst_start;
+        uint8_t* dst_end = dst_start + out_buf.capacity;
+
+        auto ensure_capacity = [&](size_t needed) {
+            size_t current_pos = static_cast<size_t>(dst - dst_start);
+            out_buf.pos = current_pos;
+            out_buf.ensure(needed);
+            dst_start = out_buf.buf;
+            dst = dst_start + current_pos;
+            dst_end = dst_start + out_buf.capacity;
+        };
+
+        auto return_output = [&]() -> std::vector<uint8_t> {
+            size_t final_sz = static_cast<size_t>(dst - dst_start);
+            std::vector<uint8_t> out(final_sz);
+            if (final_sz > 0) std::memcpy(out.data(), dst_start, final_sz);
+            return out;
+        };
 
         size_t   byte_pos = 0;
-        uint32_t bit_buf  = 0;
+        uint64_t bit_buf  = 0;
         int      bit_cnt  = 0;
 
-        // Refill bit buffer from compressed stream
         auto refill = [&]() {
-            while (bit_cnt < 24 && byte_pos < len) {
-                bit_buf |= static_cast<uint32_t>(data[byte_pos++]) << bit_cnt;
-                bit_cnt += 8;
+            if (bit_cnt < 32) {
+                if (__builtin_expect(byte_pos + 4 <= len, 1)) {
+                    uint32_t w;
+                    std::memcpy(&w, data + byte_pos, 4);
+                    bit_buf |= static_cast<uint64_t>(w) << bit_cnt;
+                    bit_cnt += 32;
+                    byte_pos += 4;
+                } else {
+                    while (bit_cnt <= 56 && byte_pos < len) {
+                        bit_buf |= static_cast<uint64_t>(data[byte_pos++]) << bit_cnt;
+                        bit_cnt += 8;
+                    }
+                }
             }
         };
 
         auto read_bits = [&](int n) -> uint32_t {
-            refill();
-            uint32_t val = bit_buf & ((1u << n) - 1);
+            if (bit_cnt < n) refill();
+            uint32_t val = static_cast<uint32_t>(bit_buf & ((1ull << n) - 1));
             bit_buf >>= n;
             bit_cnt  -= n;
             return val;
@@ -888,7 +981,7 @@ public:
 
         bool last_block = false;
         while (!last_block) {
-            refill();
+            if (bit_cnt < 3) refill();
             if (bit_cnt < 3) break; // Truncated
 
             last_block = (read_bits(1) != 0);
@@ -900,49 +993,90 @@ public:
                 byte_align();
                 uint32_t blen  = read_bits(8) | (read_bits(8) << 8);
                 uint32_t nblen = read_bits(8) | (read_bits(8) << 8);
-                if ((blen ^ nblen) != 0xFFFFu) return out; // Corrupt
+                if ((blen ^ nblen) != 0xFFFFu) return return_output(); // Corrupt
+
+                if (dst + blen + 300 >= dst_end) {
+                    ensure_capacity(blen + 65536);
+                }
 
                 for (uint32_t i = 0; i < blen; ++i) {
-                    if (byte_pos >= len && bit_cnt < 8) return out; // Truncated
-                    out.push_back(static_cast<uint8_t>(read_bits(8)));
+                    if (byte_pos >= len && bit_cnt < 8) return return_output(); // Truncated
+                    *dst++ = static_cast<uint8_t>(read_bits(8));
                 }
 
             // ----------------------------------------------------------------
             } else if (btype == 1) {
                 // Fixed Huffman block
                 while (true) {
-                    refill();
+                    // Formally verified bulk capacity guard (Lean 4 FlatBuffer.HasBulkCapacity):
+                    // Checking (dst + 300 >= dst_end) once guarantees literal write, match write,
+                    // and SIMD 16-byte chunk copy are strictly in-bounds without inner checks.
+                    if (__builtin_expect(dst + 300 >= dst_end, 0)) {
+                        ensure_capacity(65536);
+                    }
+
+                    if (bit_cnt < 15) refill();
                     uint32_t peek = bit_buf & 0x1FFu;
                     const FixedEntry& fe = fll[peek];
-                    if (fe.sym < 0 || fe.len <= 0) return out; // Error
+                    if (__builtin_expect(fe.sym < 0 || fe.len <= 0, 0)) return return_output(); // Error
 
                     bit_buf >>= fe.len;
                     bit_cnt  -= fe.len;
                     int sym = fe.sym;
 
                     if (sym < 256) {
-                        out.push_back(static_cast<uint8_t>(sym));
+                        *dst++ = static_cast<uint8_t>(sym);
                     } else if (sym == 256) {
                         break; // EOB
                     } else {
                         // Length code → read extra bits
                         int li = sym - 257;
-                        if (li < 0 || li >= 29) return out;
+                        if (__builtin_expect(li < 0 || li >= 29, 0)) return return_output();
                         const auto& lc = LENCODES[li];
                         int length = lc.base + (lc.extra > 0 ? static_cast<int>(read_bits(lc.extra)) : 0);
 
                         // Distance code: 5-bit MSB-first (reversed for LSB-first stream)
                         uint32_t d5bits = read_bits(5);
                         int dist_code = static_cast<int>(rev_bits(d5bits, 5));
-                        if (dist_code < 0 || dist_code >= 30) return out;
+                        if (__builtin_expect(dist_code < 0 || dist_code >= 30, 0)) return return_output();
                         const auto& dc = DISTCODES[dist_code];
                         int distance = dc.base + (dc.extra > 0 ? static_cast<int>(read_bits(dc.extra)) : 0);
 
-                        if (distance > static_cast<int>(out.size())) return out; // Illegal back-ref
-                        size_t base = out.size() - distance;
-                        for (int k = 0; k < length; ++k)
-                            out.push_back(out[base + k]); // Uses growing out[] for overlapping copies
+                        size_t current_pos = static_cast<size_t>(dst - dst_start);
+                        if (__builtin_expect(distance <= 0 || static_cast<size_t>(distance) > current_pos, 0)) {
+                            return return_output(); // Illegal back-ref
+                        }
 
+                        const uint8_t* src = dst - distance;
+                        if (distance == 1) {
+                            std::memset(dst, *src, length);
+                            dst += length;
+                        } else if (distance >= 32) {
+                            uint8_t* match_end = dst + length;
+                            while (dst + 32 <= match_end) {
+                                std::memcpy(dst, src, 32);
+                                dst += 32;
+                                src += 32;
+                            }
+                            while (dst < match_end) {
+                                std::memcpy(dst, src, 16);
+                                dst += 16;
+                                src += 16;
+                            }
+                            dst = match_end;
+                        } else if (distance >= 16) {
+                            uint8_t* match_end = dst + length;
+                            while (dst < match_end) {
+                                std::memcpy(dst, src, 16);
+                                dst += 16;
+                                src += 16;
+                            }
+                            dst = match_end;
+                        } else {
+                            for (int k = 0; k < length; ++k) {
+                                *dst++ = *src++;
+                            }
+                        }
                     }
                 }
 
@@ -963,9 +1097,8 @@ public:
                 auto cl_tbl = build_dyn_table(cl_lengths, 19);
 
                 // Decode hlit + hdist code lengths using code-length alphabet
-                // (Concern A: decode_cl now uses DynTable fast-path)
                 auto decode_cl = [&]() -> int {
-                    refill();
+                    if (bit_cnt < DynTable::FAST_BITS) refill();
                     uint32_t fast_idx = bit_buf & (DynTable::FAST_SIZE - 1);
                     const DynTable::Entry& fe = cl_tbl.fast[fast_idx];
                     if (fe.len > 0) {
@@ -988,7 +1121,7 @@ public:
                 all_lens.reserve(hlit + hdist);
                 while (static_cast<int>(all_lens.size()) < hlit + hdist) {
                     int sym = decode_cl();
-                    if (sym < 0) return out; // Error
+                    if (sym < 0) return return_output(); // Error
                     if (sym < 16) {
                         all_lens.push_back(sym);
                     } else if (sym == 16) {
@@ -1015,12 +1148,11 @@ public:
                 auto ll_tbl   = build_dyn_table(ll_lens,   286);
                 auto dist_tbl = build_dyn_table(dist_lens,  30);
 
-                // (Concern A: decode_sym now uses DynTable fast-path)
                 auto decode_sym = [&](const DynTable& tbl) -> int {
-                    refill();
+                    if (bit_cnt < 15) refill();
                     uint32_t fast_idx = bit_buf & (DynTable::FAST_SIZE - 1);
                     const DynTable::Entry& fe = tbl.fast[fast_idx];
-                    if (fe.len > 0) {
+                    if (__builtin_expect(fe.len > 0, 1)) {
                         bit_buf >>= fe.len;
                         bit_cnt  -= fe.len;
                         return fe.sym;
@@ -1037,36 +1169,74 @@ public:
                 };
 
                 while (true) {
+                    // Formally verified bulk capacity guard (Lean 4 FlatBuffer.HasBulkCapacity):
+                    // Checking (dst + 300 >= dst_end) once guarantees literal write, match write,
+                    // and SIMD 16-byte chunk copy are strictly in-bounds without inner checks.
+                    if (__builtin_expect(dst + 300 >= dst_end, 0)) {
+                        ensure_capacity(65536);
+                    }
+
                     int sym = decode_sym(ll_tbl);
-                    if (sym < 0) return out;
+                    if (__builtin_expect(sym < 0, 0)) return return_output();
                     if (sym < 256) {
-                        out.push_back(static_cast<uint8_t>(sym));
+                        *dst++ = static_cast<uint8_t>(sym);
                     } else if (sym == 256) {
-                        break;
+                        break; // EOB
                     } else {
                         int li = sym - 257;
-                        if (li < 0 || li >= 29) return out;
+                        if (__builtin_expect(li < 0 || li >= 29, 0)) return return_output();
                         const auto& lc = LENCODES[li];
                         int length = lc.base + (lc.extra > 0 ? static_cast<int>(read_bits(lc.extra)) : 0);
 
                         int dist_sym = decode_sym(dist_tbl);
-                        if (dist_sym < 0 || dist_sym >= 30) return out;
+                        if (__builtin_expect(dist_sym < 0 || dist_sym >= 30, 0)) return return_output();
                         const auto& dc = DISTCODES[dist_sym];
                         int distance = dc.base + (dc.extra > 0 ? static_cast<int>(read_bits(dc.extra)) : 0);
 
-                        if (distance > static_cast<int>(out.size())) return out;
-                        size_t base = out.size() - distance;
-                        for (int k = 0; k < length; ++k)
-                            out.push_back(out[base + k]);
+                        size_t current_pos = static_cast<size_t>(dst - dst_start);
+                        if (__builtin_expect(distance <= 0 || static_cast<size_t>(distance) > current_pos, 0)) {
+                            return return_output();
+                        }
+
+                        const uint8_t* src = dst - distance;
+                        if (distance == 1) {
+                            std::memset(dst, *src, length);
+                            dst += length;
+                        } else if (distance >= 32) {
+                            uint8_t* match_end = dst + length;
+                            while (dst + 32 <= match_end) {
+                                std::memcpy(dst, src, 32);
+                                dst += 32;
+                                src += 32;
+                            }
+                            while (dst < match_end) {
+                                std::memcpy(dst, src, 16);
+                                dst += 16;
+                                src += 16;
+                            }
+                            dst = match_end;
+                        } else if (distance >= 16) {
+                            uint8_t* match_end = dst + length;
+                            while (dst < match_end) {
+                                std::memcpy(dst, src, 16);
+                                dst += 16;
+                                src += 16;
+                            }
+                            dst = match_end;
+                        } else {
+                            for (int k = 0; k < length; ++k) {
+                                *dst++ = *src++;
+                            }
+                        }
                     }
                 }
 
             } else {
-                return out; // BTYPE=11: reserved / error
+                return return_output(); // BTYPE=11: reserved / error
             }
         }
 
-        return out;
+        return return_output();
     }
 };
 
@@ -1271,9 +1441,15 @@ inline std::vector<uint8_t> decompress_gzip(const uint8_t* data, size_t len) {
 
         // ── Decompress raw DEFLATE payload ────────────────────────────────────
         // The DEFLATE stream ends at an EOB symbol; the 8 trailing bytes are
-        // CRC32 + ISIZE. decompress_raw() will stop at the natural stream end.
+        // CRC32 + ISIZE. Read ISIZE (last 4 bytes) as hint_len for zero-allocation decode.
+        uint32_t isize_hint =
+            static_cast<uint32_t>(data[len - 4])
+          | (static_cast<uint32_t>(data[len - 3]) <<  8)
+          | (static_cast<uint32_t>(data[len - 2]) << 16)
+          | (static_cast<uint32_t>(data[len - 1]) << 24);
+
         const size_t max_payload = len - hdr_end - 8;
-        auto member = InflateDecompressor::decompress_raw(data + hdr_end, max_payload);
+        auto member = InflateDecompressor::decompress_raw(data + hdr_end, max_payload, isize_hint);
 
         // ── Verify CRC32 and ISIZE ────────────────────────────────────────────
         // We need the actual compressed size to skip past the member correctly.
