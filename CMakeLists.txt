@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(zlib_zero VERSION 1.0.0 LANGUAGES C CXX)
+project(zlib_zero VERSION 1.1.2 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -7,7 +7,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # Optimization & Architecture Flags
 if(MSVC)
-    add_compile_options(/O2)
+    add_compile_options(/O2 /EHsc /utf-8 /DNOMINMAX /D_CRT_SECURE_NO_WARNINGS)
 else()
     add_compile_options(-O3)
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm" AND NOT APPLE)
